@@ -1,0 +1,148 @@
+#!/bin/bash
+#
+# Command line WiFi connector. Only WPA and non-encryption supported
+#
+# Okt 31 09:06:31 CET 2007
+# Fri May 23 16:02:39 CEST 2008 / added WPA option
+# Thu May 29 19:56:10 CEST 2008 / WPA key input is now invisible
+#                                 added rescanning if SSID input is blank
+# Thu Sep 18 10:30:15 CEST 2008 / added function to scan available interface
+#                                 and wpa_supplicant binary check
+# Wed Aug 19 11:37:54 CEST 2009 / more optimized
+# Mon Oct  3 14:53:59 CEST 2016 / dialog'ed
+#
+#
+IFACE=$1
+umask 0002 # secure tmp files
+pkill wpa_supplicant # kill existing wpa processes
+ 
+DIALOGBIN=`which dialog`
+if [[ -z $DIALOGBIN ]] ; then
+        DIALOG=
+else
+        #DIALOGBIN="$DIALOGBIN --backtitle \"Wireless connection wizard\""
+        DIALOG=1
+        TMP=/tmp/tmp.$$
+        trap "rm -rf $TMP" INT TERM EXIT
+fi
+ 
+# Check if Parameter is a valid Interface to use. If not, the Script proposes
+# the Interface he found with iwconfig
+ifconfig $IFACE > /dev/null
+if [ "$?" -eq "1" ] ; then
+        FINDIFACE=`iwconfig |grep IEEE |awk '{print $1}'`
+        if [[ $DIALOG ]]; then
+                $DIALOGBIN --title "Interface $1 not found" --msgbox "But found $FINDIFACE. \nContinuing with this interface" 8 50
+        else
+                clear
+                echo "Interface $1 not found..."
+                echo "...but found $FINDIFACE. Press [ENTER] to continue with this Interface."
+                read
+        fi
+        IFACE=$FINDIFACE
+fi
+ 
+# Output a Usage if no Parameter is given
+if [ "$1" == "" ] ; then
+        echo "Usage: $0 interface"
+        exit 1
+fi
+clear
+ifconfig $IFACE up
+ 
+if [[ $DIALOG ]]; then
+        $DIALOGBIN --infobox "Scanning for Access Points on $IFACE ..." 3 50
+        SSIDLIST=`iwlist $IFACE scanning |grep ESSID |cut -f2 -d\" |grep -v "\\x00"` 
+        SSIDLISTSIZE=`echo $SSIDLIST |wc -w`
+        $DIALOGBIN  --title "Enter ESSID you want to connect or leave blank to rescan" --inputbox "$SSIDLIST" `expr 10 + $SSIDLISTSIZE` 80 2>$TMP
+        SSID=`cat $TMP`
+else
+        echo "Scanning for Access Points in $IFACE ..."
+        echo ""
+        iwlist $IFACE scanning |grep ESSID
+        echo ""
+        echo "Enter ESSID you want to connect or leave blank to rescan and press [ENTER]:"
+        read SSID
+fi
+ 
+# If the Input is empty, the Script loops over the scan and asks each time to enter
+# a SSID to continue with the connection
+while [[ -z $SSID ]]; do
+        clear
+        if [[ $DIALOG ]]; then
+                $DIALOGBIN --infobox "Rescanning for Access Points on $IFACE ..." 3 50
+                SSIDLIST=`iwlist $IFACE scanning |grep ESSID |cut -f2 -d\" |grep -v "\\x00"`
+                SSIDLISTSIZE=`echo $SSIDLIST |wc -w`
+                $DIALOGBIN --title "Enter ESSID you want to connect or leave blank to rescan" --inputbox "$SSIDLIST" `expr 10 + $SSIDLISTSIZE` 80 2>$TMP
+                SSID=`cat $TMP`
+        else
+                echo "Rescanning for Access Points..."
+                iwlist $IFACE scanning |grep ESSID
+                echo "Enter ESSID you want to connect or leave blank to rescan and press [ENTER]:"
+                echo ""
+                read SSID
+        fi
+done
+ 
+# Set the entered SSID and wait 1 Second
+iwconfig $IFACE ESSID "$SSID"
+sleep 1
+ 
+# Encryption select
+if [[ $DIALOG ]]; then
+        $DIALOGBIN --title "Encryption" --radiolist "Please select Security for $SSID:" 10 60 2 1 None off 2 WPA on 2>$TMP
+        ENCRYPT=`cat $TMP`
+else
+        clear
+        echo "You are connecting to $SSID"
+ 
+        echo "Please select Security: "
+        echo "1: None"
+        echo "2: WPA"
+        read ENCRYPT
+fi
+ 
+case "$ENCRYPT" in
+        1)
+                ;;
+        2)
+                # Check if wpa_supplicant is installed and quit if not
+                if [[ ! `which wpa_supplicant` ]]; then
+                        if [[ $DIALOG ]]; then
+                                $DIALOGBIN --infobox "wpa_supplicant was not found on this system. Aborted" 3 60
+                        else
+                                echo "wpa_supplicant was not found on this system. Aborted"
+                        fi
+                        exit 1
+                fi
+                if [[ $DIALOG ]]; then
+                        $DIALOGBIN --passwordbox "Enter Passphrase" 10 60 2>$TMP 
+                        PASS=`cat $TMP`
+                else
+                        echo "Enter Passpharse: "
+                        read -s PASS
+                fi
+ 
+                # Store the entered Passphrase as WPA Key and start wpa_supplicant
+                # process in the background
+                wpa_passphrase $SSID $PASS > /etc/wpa_supplicant/wpa_supplicant.conf
+                chmod 600 /etc/wpa_supplicant/wpa_supplicant.conf
+                wpa_supplicant -B -Dwext -i$IFACE -c/etc/wpa_supplicant/wpa_supplicant.conf &
+                ;;
+        *)
+                if [[ $DIALOG ]]; then
+                        $DIALOGBIN --infobox "Wrong selection. Aborted!" 3 60
+                else
+                        echo "Wrong selection. Aborted!"
+                fi
+                exit 1
+                ;;
+esac
+ 
+# Renew the IP and quit smoothly
+if [[ $DIALOG ]]; then
+        $DIALOGBIN --infobox "Obtaining IP Address\n\n If this process takes longer than 15s,\n you may enter a wrong key or no DHCP server present" 6 60
+        dhclient -q -1 $IFACE
+else
+        dhclient -v -1 $IFACE
+fi
