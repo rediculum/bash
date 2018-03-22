@@ -1,0 +1,17 @@
+#!/bin/bash
+PACKAGE=$1
+VERSION=$2
+RELEASE=$3
+ 
+[[ $@ -ne 3 ]] && { echo "Usage: $0 packagename version release"; exit 2; }
+ 
+for id in `/usr/bin/spacewalk-report system-packages-installed \
+           --where-package_name=$PACKAGE \
+           --where-package_version=$VERSION \
+           --where-package_release=$RELEASE \
+           |cut -f1 -d, |grep -v ^system_id`
+        do
+           /usr/bin/spacewalk-report inventory \
+           --where-server_id=$id \
+           |cut -f3 -d, |tail -1
+done
